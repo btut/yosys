@@ -18,12 +18,12 @@ ENABLE_READLINE := 1
 ENABLE_EDITLINE := 0
 ENABLE_VERIFIC := 0
 ENABLE_COVER := 1
-ENABLE_LIBYOSYS := 0
+ENABLE_LIBYOSYS := 1
 ENABLE_PROTOBUF := 0
 ENABLE_ZLIB := 1
 
 # python wrappers
-ENABLE_PYOSYS := 0
+ENABLE_PYOSYS := 1
 
 # other configuration flags
 ENABLE_GCOV := 0
@@ -395,7 +395,7 @@ ifeq ($(ENABLE_PYOSYS),1)
 PY_WRAPPER_FILE = kernel/python_wrappers
 OBJS += $(PY_WRAPPER_FILE).o
 PY_GEN_SCRIPT= py_wrap_generator
-PY_WRAP_INCLUDES := $(shell python$(PYTHON_VERSION) -c "from misc import $(PY_GEN_SCRIPT); $(PY_GEN_SCRIPT).print_includes()")
+PY_WRAP_INCLUDES := $(shell python$(PYTHON_VERSION) -c "from pyosys_src import $(PY_GEN_SCRIPT); $(PY_GEN_SCRIPT).print_includes()")
 endif
 endif
 
@@ -688,9 +688,9 @@ endif
 	$(P) cat $< | grep -E -v "#[ ]*(include|error)" | $(LD) $(CXXFLAGS) -x c++ -o $@ -E -P -
 
 ifeq ($(ENABLE_PYOSYS),1)
-$(PY_WRAPPER_FILE).cc: misc/$(PY_GEN_SCRIPT).py $(PY_WRAP_INCLUDES)
+$(PY_WRAPPER_FILE).cc: pyosys_src/$(PY_GEN_SCRIPT).py $(PY_WRAP_INCLUDES)
 	$(Q) mkdir -p $(dir $@)
-	$(P) python$(PYTHON_VERSION) -c "from misc import $(PY_GEN_SCRIPT); $(PY_GEN_SCRIPT).gen_wrappers(\"$(PY_WRAPPER_FILE).cc\")"
+	$(P) python$(PYTHON_VERSION) -c "from pyosys_src import $(PY_GEN_SCRIPT); $(PY_GEN_SCRIPT).gen_wrappers(\"$(PY_WRAPPER_FILE).cc\")"
 endif
 
 %.o: %.cpp
