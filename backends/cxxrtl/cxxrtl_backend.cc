@@ -22,6 +22,7 @@
 #include "kernel/sigtools.h"
 #include "kernel/utils.h"
 #include "kernel/celltypes.h"
+#include "kernel/mem.h"
 #include "kernel/log.h"
 
 USING_YOSYS_NAMESPACE
@@ -526,6 +527,7 @@ struct CxxrtlWorker {
 	std::ostream *impl_f = nullptr;
 	std::ostream *intf_f = nullptr;
 
+	bool run_hierarchy = false;
 	bool run_flatten = false;
 	bool run_proc = false;
 
@@ -2182,6 +2184,8 @@ struct CxxrtlWorker {
 				if (wire->name.begins_with("$") && !elide_internal) continue;
 				if (wire->name.begins_with("\\") && !elide_public) continue;
 				if (edge_wires[wire]) continue;
+				if (flow.wire_comb_defs[wire].size() > 1)
+					log_cmd_error("Wire %s.%s has multiple drivers.\n", log_id(module), log_id(wire));
 				log_assert(flow.wire_comb_defs[wire].size() == 1);
 				elided_wires[wire] = **flow.wire_comb_defs[wire].begin();
 			}
@@ -2326,9 +2330,9 @@ struct CxxrtlWorker {
 		}
 	}
 
-	void check_design(RTLIL::Design *design, bool &has_sync_init, bool &has_packed_mem)
+	void check_design(RTLIL::Design *design, bool &has_top, bool &has_sync_init, bool &has_packed_mem)
 	{
-		has_sync_init = has_packed_mem = false;
+		has_sync_init = has_packed_mem = has_top = false;
 
 		for (auto module : design->modules()) {
 			if (module->get_blackbox_attribute() && !module->has_attribute(ID(cxxrtl_blackbox)))
@@ -2340,13 +2344,17 @@ struct CxxrtlWorker {
 			if (!design->selected_module(module))
 				continue;
 
+			if (module->get_bool_attribute(ID::top))
+				has_top = true;
+
 			for (auto proc : module->processes)
 				for (auto sync : proc.second->syncs)
 					if (sync->type == RTLIL::STi)
 						has_sync_init = true;
 
-			for (auto cell : module->cells())
-				if (cell->type == ID($mem))
+			// The Mem constructor also checks for well-formedness of $meminit cells, if any.
+			for (auto &mem : Mem::get_all_memories(module))
+				if (mem.packed)
 					has_packed_mem = true;
 		}
 	}
@@ -2354,9 +2362,13 @@ struct CxxrtlWorker {
 	void prepare_design(RTLIL::Design *design)
 	{
 		bool did_anything = false;
-		bool has_sync_init, has_packed_mem;
+		bool has_top, has_sync_init, has_packed_mem;
 		log_push();
-		check_design(design, has_sync_init, has_packed_mem);
+		check_design(design, has_top, has_sync_init, has_packed_mem);
+		if (run_hierarchy && !has_top) {
+			Pass::call(design, "hierarchy -auto-top");
+			did_anything = true;
+		}
 		if (run_flatten) {
 			Pass::call(design, "flatten");
 			did_anything = true;
@@ -2377,9 +2389,9 @@ struct CxxrtlWorker {
 			did_anything = true;
 		}
 		// Recheck the design if it was modified.
-		if (has_sync_init || has_packed_mem)
-			check_design(design, has_sync_init, has_packed_mem);
-		log_assert(!(has_sync_init || has_packed_mem));
+		if (did_anything)
+			check_design(design, has_top, has_sync_init, has_packed_mem);
+		log_assert(has_top && !has_sync_init && !has_packed_mem);
 		log_pop();
 		if (did_anything)
 			log_spacer();
@@ -2561,6 +2573,11 @@ struct CxxrtlBackend : public Backend {
 		log("        place the generated code into namespace <ns-name>. if not specified,\n");
 		log("        \"cxxrtl_design\" is used.\n");
 		log("\n");
+		log("    -nohierarchy\n");
+		log("        use design hierarchy as-is. in most designs, a top module should be\n");
+		log("        present as it is exposed through the C API and has unbuffered outputs\n");
+		log("        for improved performance; it will be determined automatically if absent.\n");
+		log("\n");
 		log("    -noflatten\n");
 		log("        don't flatten the design. fully flattened designs can evaluate within\n");
 		log("        one delta cycle if they have no combinatorial feedback.\n");
@@ -2617,6 +2634,7 @@ struct CxxrtlBackend : public Backend {
 
 	void execute(std::ostream *&f, std::string filename, std::vector<std::string> args, RTLIL::Design *design) override
 	{
+		bool nohierarchy = false;
 		bool noflatten = false;
 		bool noproc = false;
 		int opt_level = DEFAULT_OPT_LEVEL;
@@ -2628,6 +2646,10 @@ struct CxxrtlBackend : public Backend {
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++)
 		{
+			if (args[argidx] == "-nohierarchy") {
+				nohierarchy = true;
+				continue;
+			}
 			if (args[argidx] == "-noflatten") {
 				noflatten = true;
 				continue;
@@ -2673,6 +2695,7 @@ struct CxxrtlBackend : public Backend {
 		}
 		extra_args(f, filename, args, argidx);
 
+		worker.run_hierarchy = !nohierarchy;
 		worker.run_flatten = !noflatten;
 		worker.run_proc = !noproc;
 		switch (opt_level) {

@@ -31,6 +31,8 @@ ENABLE_GPROF := 0
 ENABLE_DEBUG := 0
 ENABLE_NDEBUG := 0
 ENABLE_CCACHE := 0
+# sccache is not always a drop-in replacement for ccache in practice
+ENABLE_SCCACHE := 0
 LINK_CURSES := 0
 LINK_TERMCAP := 0
 LINK_ABC := 0
@@ -123,7 +125,7 @@ LDFLAGS += -rdynamic
 LDLIBS += -lrt
 endif
 
-YOSYS_VER := 0.9+3586
+YOSYS_VER := 0.9+3710
 GIT_REV := $(shell cd $(YOSYS_SRC) && git rev-parse --short HEAD 2> /dev/null || echo UNKNOWN)
 OBJS = kernel/version_$(GIT_REV).o
 
@@ -136,7 +138,7 @@ bumpversion:
 # is just a symlink to your actual ABC working directory, as 'make mrproper'
 # will remove the 'abc' directory and you do not want to accidentally
 # delete your work on ABC..
-ABCREV = 341db25
+ABCREV = 4f5f73d
 ABCPULL = 1
 ABCURL ?= https://github.com/YosysHQ/abc
 ABCMKARGS = CC="$(CXX)" CXX="$(CXX)" ABC_USE_LIBSTDCXX=1
@@ -530,6 +532,10 @@ endif
 
 ifeq ($(ENABLE_CCACHE),1)
 CXX := ccache $(CXX)
+else
+ifeq ($(ENABLE_SCCACHE),1)
+CXX := sccache $(CXX)
+endif
 endif
 
 define add_share_file
@@ -586,6 +592,7 @@ $(eval $(call add_include_file,kernel/utils.h))
 $(eval $(call add_include_file,kernel/satgen.h))
 $(eval $(call add_include_file,kernel/ff.h))
 $(eval $(call add_include_file,kernel/ffinit.h))
+$(eval $(call add_include_file,kernel/mem.h))
 $(eval $(call add_include_file,libs/ezsat/ezsat.h))
 $(eval $(call add_include_file,libs/ezsat/ezminisat.h))
 $(eval $(call add_include_file,libs/sha1/sha1.h))
@@ -601,7 +608,7 @@ $(eval $(call add_include_file,backends/cxxrtl/cxxrtl_vcd_capi.cc))
 $(eval $(call add_include_file,backends/cxxrtl/cxxrtl_vcd_capi.h))
 
 OBJS += kernel/driver.o kernel/register.o kernel/rtlil.o kernel/log.o kernel/calc.o kernel/yosys.o
-OBJS += kernel/cellaigs.o kernel/celledges.o kernel/satgen.o
+OBJS += kernel/cellaigs.o kernel/celledges.o kernel/satgen.o kernel/mem.o
 
 kernel/log.o: CXXFLAGS += -DYOSYS_SRC='"$(YOSYS_SRC)"'
 kernel/yosys.o: CXXFLAGS += -DYOSYS_DATDIR='"$(DATDIR)"' -DYOSYS_PROGRAM_PREFIX='"$(PROGRAM_PREFIX)"'
@@ -659,6 +666,10 @@ endif
 ifeq ($(LINK_ABC),1)
 OBJS += $(PROGRAM_PREFIX)yosys-libabc.a
 endif
+
+# prevent the CXXFLAGS set by this Makefile from reaching abc/Makefile,
+# especially the -MD flag which will break the build when CXX is clang
+unexport CXXFLAGS
 
 top-all: $(TARGETS) $(EXTRA_TARGETS)
 	@echo ""
@@ -789,6 +800,7 @@ test: $(TARGETS) $(EXTRA_TARGETS)
 	+cd tests/arch/anlogic && bash run-test.sh $(SEEDOPT)
 	+cd tests/arch/gowin && bash run-test.sh $(SEEDOPT)
 	+cd tests/arch/intel_alm && bash run-test.sh $(SEEDOPT)
+	+cd tests/arch/nexus && bash run-test.sh $(SEEDOPT)
 	+cd tests/rpc && bash run-test.sh
 	+cd tests/memfile && bash run-test.sh
 	+cd tests/verilog && bash run-test.sh
@@ -845,9 +857,9 @@ ifeq ($(ENABLE_LIBYOSYS),1)
 	$(INSTALL_SUDO) cp libyosys.so $(DESTDIR)$(LIBDIR)/
 	$(INSTALL_SUDO) $(STRIP) -S $(DESTDIR)$(LIBDIR)/libyosys.so
 ifeq ($(ENABLE_PYOSYS),1)
-	$(INSTALL_SUDO) mkdir -p $(PYTHON_DESTDIR)/$(subst -,_,$(PROGRAM_PREFIX))pyosys
-	$(INSTALL_SUDO) cp libyosys.so $(PYTHON_DESTDIR)/$(subst -,_,$(PROGRAM_PREFIX))pyosys/libyosys.so
-	$(INSTALL_SUDO) cp misc/__init__.py $(PYTHON_DESTDIR)/$(subst -,_,$(PROGRAM_PREFIX))pyosys/
+	$(INSTALL_SUDO) mkdir -p $(DESTDIR)$(PYTHON_DESTDIR)/$(subst -,_,$(PROGRAM_PREFIX))pyosys
+	$(INSTALL_SUDO) cp libyosys.so $(DESTDIR)$(PYTHON_DESTDIR)/$(subst -,_,$(PROGRAM_PREFIX))pyosys/libyosys.so
+	$(INSTALL_SUDO) cp misc/__init__.py $(DESTDIR)$(PYTHON_DESTDIR)/$(subst -,_,$(PROGRAM_PREFIX))pyosys/
 endif
 endif
 
@@ -857,9 +869,9 @@ uninstall:
 ifeq ($(ENABLE_LIBYOSYS),1)
 	$(INSTALL_SUDO) rm -vf $(DESTDIR)$(LIBDIR)/libyosys.so
 ifeq ($(ENABLE_PYOSYS),1)
-	$(INSTALL_SUDO) rm -vf $(PYTHON_DESTDIR)/$(subst -,_,$(PROGRAM_PREFIX))pyosys/libyosys.so
-	$(INSTALL_SUDO) rm -vf $(PYTHON_DESTDIR)/$(subst -,_,$(PROGRAM_PREFIX))pyosys/__init__.py
-	$(INSTALL_SUDO) rmdir $(PYTHON_DESTDIR)/$(subst -,_,$(PROGRAM_PREFIX))pyosys
+	$(INSTALL_SUDO) rm -vf $(DESTDIR)$(PYTHON_DESTDIR)/$(subst -,_,$(PROGRAM_PREFIX))pyosys/libyosys.so
+	$(INSTALL_SUDO) rm -vf $(DESTDIR)$(PYTHON_DESTDIR)/$(subst -,_,$(PROGRAM_PREFIX))pyosys/__init__.py
+	$(INSTALL_SUDO) rmdir $(DESTDIR)$(PYTHON_DESTDIR)/$(subst -,_,$(PROGRAM_PREFIX))pyosys
 endif
 endif
 
@@ -1013,4 +1025,3 @@ echo-abc-rev:
 
 .PHONY: all top-all abc test install install-abc manual clean mrproper qtcreator coverage vcxsrc mxebin
 .PHONY: config-clean config-clang config-gcc config-gcc-static config-gcc-4.8 config-afl-gcc config-gprof config-sudo
-
